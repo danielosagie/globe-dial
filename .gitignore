@@ -1,0 +1,8 @@
+node_modules
+dist
+out
+.DS_Store
+.vercel
+*.local
+*.tsbuildinfo
+globe.props.json

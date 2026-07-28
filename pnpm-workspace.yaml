@@ -1,0 +1,10 @@
+packages:
+  - "."
+# Match Vercel's supply-chain policy so the lockfile we commit is one their
+# build accepts. Without this, pnpm resolves to packages published minutes ago
+# and the deploy fails on ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION.
+minimumReleaseAge: 1440
+allowBuilds:
+  esbuild: true
+onlyBuiltDependencies:
+  - esbuild

@@ -1,0 +1,8 @@
+/* cobe sizes its buffer from clientWidth, so the source canvas has to be laid
+   out. Park it offscreen instead of hiding it. */
+.globe-offscreen {
+  position: fixed;
+  top: 0;
+  left: -20000px;
+  pointer-events: none;
+}
