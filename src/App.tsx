@@ -7,11 +7,12 @@ import { rgbLiteral } from './lib/color';
 import {
   download,
   extensionFor,
-  pickMimeType,
+  pickBrowserCapture,
   recordCanvas,
   stamp,
   type RecordHandle,
 } from './lib/recorder';
+import { carriesAlpha } from './lib/formats';
 
 /** Give the compositor time to swap to full output resolution before capture. */
 function waitFrames(count: number) {
@@ -52,11 +53,13 @@ export default function App() {
     if (!canvas || busyRef.current) return;
 
     const s = settingsRef.current;
-    const mimeType = pickMimeType(s.record.format);
-    if (!mimeType) {
-      flash('format not supported in this browser');
+    const capture = pickBrowserCapture(s.record.format, s.background.transparent);
+    if (!capture) {
+      flash('no recordable format in this browser');
       return;
     }
+    const { mimeType } = capture;
+    if (capture.note) flash(capture.note);
     // A backgrounded tab pauses rAF, which stalls the canvas and the stream.
     if (document.hidden) {
       flash('bring the tab to the front');
@@ -195,6 +198,8 @@ export default function App() {
 
   const { width: outWidth, height: outHeight } = outputSize(settings);
   const panelHidden = Boolean(recording) && settings.record.hidePanel;
+  // Asking for a transparent stage in a container that cannot store alpha.
+  const alphaLost = settings.background.transparent && !carriesAlpha(settings.record.format);
 
   return (
     <main className={`page${settings.background.transparent ? ' page--checker' : ''}`}>
@@ -221,6 +226,9 @@ export default function App() {
           <span>{settings.record.format}</span>
           <span>{durationSeconds(settings).toFixed(1)}s</span>
           <span>{settings.record.fps} fps</span>
+          {alphaLost ? (
+            <span className="readout__warn">{settings.record.format} has no alpha</span>
+          ) : null}
           {note ? <span className="readout__note">{note}</span> : <span>r to record</span>}
         </footer>
       ) : null}

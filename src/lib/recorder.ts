@@ -1,20 +1,35 @@
-export const FORMAT_OPTIONS = [
-  { value: 'vp9', label: 'webm vp9' },
-  { value: 'vp8', label: 'webm vp8' },
-  { value: 'mp4', label: 'mp4' },
-];
+const MP4 = ['video/mp4;codecs=avc1.42E01E', 'video/mp4'];
+const WEBM = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
 
-const CANDIDATES: Record<string, string[]> = {
-  vp9: ['video/webm;codecs=vp9', 'video/webm'],
-  vp8: ['video/webm;codecs=vp8', 'video/webm'],
-  mp4: ['video/mp4;codecs=avc1.42E01E', 'video/mp4'],
-};
+export type BrowserCapture = { mimeType: string; note: string | null };
 
-/** Codec support varies by browser, so probe rather than assume. */
-export function pickMimeType(format: string): string | null {
+/**
+ * MediaRecorder can only write mp4 or webm, and only webm carries alpha.
+ * Pick the closest container to what the panel asked for and say plainly when
+ * that is not the same thing. Remotion is the path for mov, gif and ProRes.
+ */
+export function pickBrowserCapture(format: string, transparent: boolean): BrowserCapture | null {
   if (typeof MediaRecorder === 'undefined') return null;
-  for (const candidate of CANDIDATES[format] ?? []) {
-    if (MediaRecorder.isTypeSupported(candidate)) return candidate;
+
+  const needsAlpha = transparent;
+  let candidates = MP4;
+  let note: string | null = null;
+
+  if (format === 'mp4') {
+    // A transparent stage in an opaque container silently loses the alpha.
+    if (needsAlpha) {
+      candidates = WEBM;
+      note = 'mp4 has no alpha, captured webm';
+    }
+  } else if (format === 'mov' || format === 'gif') {
+    candidates = WEBM;
+    note = `${format} renders in remotion, captured webm`;
+  } else {
+    candidates = WEBM;
+  }
+
+  for (const mimeType of candidates) {
+    if (MediaRecorder.isTypeSupported(mimeType)) return { mimeType, note };
   }
   return null;
 }

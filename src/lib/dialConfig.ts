@@ -1,6 +1,6 @@
 import type { DialConfig, ResolvedValues } from 'dialkit';
 import { MARKER_OPTIONS } from './markers';
-import { FORMAT_OPTIONS } from './recorder';
+import { FORMAT_OPTIONS } from './formats';
 
 export const FONT_OPTIONS = [
   { value: 'system-ui, -apple-system, "Helvetica Neue", sans-serif', label: 'sans' },
@@ -10,7 +10,7 @@ export const FONT_OPTIONS = [
 
 const WEIGHT_OPTIONS = ['300', '400', '500', '600', '700', '800'];
 const ALIGN_OPTIONS = ['left', 'center', 'right'];
-const FPS_OPTIONS = ['24', '30', '60'];
+const FPS_OPTIONS = ['24', '30', '60', '120'];
 const RESOLUTION_OPTIONS = ['512', '768', '1024', '1536', '2048'];
 
 /**
@@ -81,8 +81,8 @@ export const DIALS = {
   record: {
     start: { type: 'action', label: 'Record' },
     turns: [1, 1, 8, 1],
-    fps: { type: 'select', options: FPS_OPTIONS, default: '60' },
-    format: { type: 'select', options: FORMAT_OPTIONS, default: 'vp9' },
+    fps: { type: 'select', options: FPS_OPTIONS, default: '120' },
+    format: { type: 'select', options: FORMAT_OPTIONS, default: 'mp4' },
     mbps: [16, 2, 80, 1],
     hidePanel: true,
   },

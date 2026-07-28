@@ -28,9 +28,9 @@ Export briefly switches the same canvas up to full resolution first.
 
 ### Remotion, for anything you ship
 
-Realtime browser capture drops frames whenever the machine hitches. Remotion
-renders offline, one frame at a time, so the result is smooth regardless of how
-long any frame took.
+Realtime browser capture drops frames whenever the machine hitches, and it can
+never exceed the display refresh rate. Remotion renders offline, one frame at a
+time, so 120 fps is real regardless of how long any frame took.
 
 1. Dial it in, then `Save JSON` from the panel. You get `globe.props.json`.
 2. Render it:
@@ -39,25 +39,54 @@ long any frame took.
 pnpm render --props=./globe.props.json
 ```
 
-Also available: `pnpm render:gif`, `pnpm render:png` for a frame sequence,
-`pnpm still` for a poster, and `pnpm studio` to scrub the composition.
+The script reads the JSON and picks the codec, profile and pixel format for you,
+so you cannot land on a combination that quietly drops what you asked for. It
+prints what it chose. Anything else you pass is forwarded to `remotion render`.
 
-Width, height, fps and length all come from the JSON through
+Width, height, fps and length come from the same JSON through
 `calculateMetadata`, so the render matches the readout in the panel. Rotation is
 derived from the frame number, not from a clock.
 
-For a transparent webm:
-
-```bash
-pnpm render --props=./globe.props.json --codec=vp8 --pixel-format=yuva420p out/globe.webm
-```
+Also available: `pnpm render:png` for a frame sequence, `pnpm still` for a
+poster, and `pnpm studio` to scrub the composition.
 
 Renders need a named OpenGL backend, set in `remotion.config.ts` to `angle`.
 On a machine with no display, pass `--gl=swangle`.
 
+At 120 fps the default 24 second turn is 2880 frames. Shorten
+`spin.secondsPerTurn` while you are iterating.
+
+## Transparent background
+
+Alpha is a property of the codec, not a flag. Verified behaviour:
+
+| Format | Codec | Alpha |
+| --- | --- | --- |
+| `mov` | ProRes 4444, `yuva444p12le` | yes |
+| `webm` | VP9, `yuva420p` | yes |
+| `mp4` | h264 | **no**, h264 has no alpha channel |
+| `gif` | gif | 1 bit only, no soft edges |
+
+Turn on `stage.transparent`, pick `mov` or `webm`, and render. The panel warns in
+the readout when the stage is transparent but the chosen format cannot store it,
+and the render script upgrades mp4 to ProRes 4444 rather than silently flattening
+the background, telling you it did.
+
+`mov` is the one to hand to After Effects, Final Cut or Premiere. `webm` is the
+one to put on a web page. Both were checked by reading back pixel alpha, not by
+trusting the container metadata.
+
+Note that ffmpeg's default decoder ignores WebM alpha side data, so extracting a
+frame with ffmpeg makes a working transparent webm look opaque. Check it in a
+browser instead.
+
 ### Browser capture, for a quick look
 
 Press `r`, or use Record in the panel. `Esc` stops early.
+
+MediaRecorder can only write mp4 or webm, and only webm carries alpha, so a
+transparent stage or a `mov`/`gif` selection is captured as webm and the readout
+says so. Frame rate is capped by the display refresh rate whatever fps says.
 
 - Duration is `record.turns` multiplied by `spin.secondsPerTurn`.
 - Rotation is driven from the record start time rather than accumulated per

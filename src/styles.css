@@ -86,6 +86,11 @@ body {
   opacity: 1;
 }
 
+.readout__warn {
+  color: #fbbf24;
+  opacity: 1;
+}
+
 .pill {
   position: fixed;
   top: 16px;

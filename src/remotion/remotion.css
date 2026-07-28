@@ -1,3 +1,10 @@
+/* Nothing may paint behind the stage canvas, or a transparent render comes out
+   with a solid backdrop baked in. */
+html,
+body {
+  background: transparent;
+}
+
 /* cobe sizes its buffer from clientWidth, so the source canvas has to be laid
    out. Park it offscreen instead of hiding it. */
 .globe-offscreen {

@@ -8,9 +8,8 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "studio": "remotion studio src/remotion/index.ts",
-    "render": "remotion render src/remotion/index.ts GlobeVideo out/globe.mp4",
-    "render:gif": "remotion render src/remotion/index.ts GlobeVideo out/globe.gif --codec=gif",
-    "render:png": "remotion render src/remotion/index.ts GlobeVideo out/frames --sequence",
+    "render": "node scripts/render.mjs",
+    "render:png": "remotion render src/remotion/index.ts GlobeVideo out/frames --sequence --image-format=png",
     "still": "remotion still src/remotion/index.ts GlobeStill out/globe.png"
   },
   "dependencies": {
