@@ -67,6 +67,12 @@ Alpha is a property of the codec, not a flag. Verified behaviour:
 | `mp4` | h264 | **no**, h264 has no alpha channel |
 | `gif` | gif | 1 bit only, no soft edges |
 
+There is no transparent mp4. h264 cannot hold alpha, and while HEVC can in
+principle, `hevc_videotoolbox -alpha_quality` was tried here and emitted a plain
+`yuv420p` track with no alpha layer, byte for byte identical with and without
+the flag. `.mov` is the same ISO base container as `.mp4` and every editor opens
+it, so ProRes 4444 is the answer rather than a workaround.
+
 Turn on `stage.transparent`, pick `mov` or `webm`, and render. The panel warns in
 the readout when the stage is transparent but the chosen format cannot store it,
 and the render script upgrades mp4 to ProRes 4444 rather than silently flattening
@@ -80,21 +86,28 @@ Note that ffmpeg's default decoder ignores WebM alpha side data, so extracting a
 frame with ffmpeg makes a working transparent webm look opaque. Check it in a
 browser instead.
 
-### Browser capture, for a quick look
+### In the browser
 
 Press `r`, or use Record in the panel. `Esc` stops early.
 
-MediaRecorder can only write mp4 or webm, and only webm carries alpha, so a
-transparent stage or a `mov`/`gif` selection is captured as webm. The readout
-shows this as `mp4 → webm` before you record rather than after the file lands.
-Safari and Firefox cannot record mp4 at all and fall back the same way.
+This encodes rather than records. Frames are drawn and handed to a WebCodecs
+encoder one at a time through mediabunny, so the file holds exactly the frames
+asked for at exactly the rate asked for, however long any single frame took.
+A 2 second 120 fps export lands 240 samples at a timescale of 120, every time.
+
+Because nothing waits on `requestAnimationFrame`, an export keeps running at
+full speed in a background tab. It is also frequently faster than realtime.
 
 Files are named from the container's magic bytes, so the extension always
-matches what is inside. Renaming a `.webm` to `.mp4` does not transcode it, it
-just mislabels it. To actually get an mp4 of a transparent stage you have to
-give up the transparency, or render a mov and convert.
+matches what is inside. Renaming a `.webm` to `.mp4` does not transcode it.
 
-Frame rate is capped by the display refresh rate whatever fps says.
+The one exception is a transparent stage. No browser encoder keeps an alpha
+channel, verified with `VideoEncoder.isConfigSupported` across avc, vp9, vp8,
+hevc and av1, all of which report `alpha: 'keep'` unsupported. MediaRecorder's
+VP9 webm is the only browser path that carries alpha, so a transparent stage
+goes through it and the readout says `mp4 → webm` up front. That path is
+realtime, so it needs the tab in front. For a transparent export you actually
+want to ship, use `pnpm render` and get ProRes 4444.
 
 - Duration is `record.turns` multiplied by `spin.secondsPerTurn`.
 - Rotation is driven from the record start time rather than accumulated per

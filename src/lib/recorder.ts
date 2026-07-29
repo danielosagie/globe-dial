@@ -51,15 +51,21 @@ export function extensionFor(mimeType: string): string {
  * Name the file after what is actually inside it. The requested mime type is
  * a request, not a guarantee, and a webm called .mp4 reads as a broken export.
  */
-export async function actualExtension(blob: Blob, mimeType: string): Promise<string> {
+export async function actualExtension(blob: Blob, declared: string): Promise<string> {
   try {
     const head = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
     if (head[0] === 0x1a && head[1] === 0x45 && head[2] === 0xdf && head[3] === 0xa3) return 'webm';
-    if (String.fromCharCode(head[4], head[5], head[6], head[7]) === 'ftyp') return 'mp4';
+    if (String.fromCharCode(head[4], head[5], head[6], head[7]) === 'ftyp') {
+      // QuickTime and mp4 share the ISO base container. The major brand at
+      // byte 8 is what separates them.
+      const brand = String.fromCharCode(head[8], head[9], head[10], head[11]);
+      return brand.startsWith('qt') ? 'mov' : 'mp4';
+    }
   } catch {
     // Fall through to the declared type.
   }
-  return extensionFor(mimeType);
+  if (declared === 'mov') return 'mov';
+  return extensionFor(declared);
 }
 
 export type RecordHandle = {

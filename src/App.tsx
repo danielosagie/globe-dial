@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DialRoot } from 'dialkit';
 import 'dialkit/styles.css';
-import { GlobeStage } from './GlobeStage';
+import { GlobeStage, type StageHandle } from './GlobeStage';
+import { canEncode, encodeFrames, type EncodeContainer } from './lib/encode';
 import { durationSeconds, outputSize, toStage, useGlobeDials, type DialValues } from './lib/dials';
 import { rgbLiteral } from './lib/color';
 import {
@@ -34,11 +35,14 @@ export default function App() {
   valuesRef.current = values;
 
   const stageCanvasRef = useRef<HTMLCanvasElement>(null);
+  const stageHandleRef = useRef<StageHandle | null>(null);
   const recordAnchorRef = useRef<number | null>(null);
   const renderFullRef = useRef(false);
   const handleRef = useRef<RecordHandle | null>(null);
   const busyRef = useRef(false);
+  const cancelExportRef = useRef(false);
 
+  const [exporting, setExporting] = useState<{ done: number; total: number } | null>(null);
   const [recording, setRecording] = useState<{ endsAt: number } | null>(null);
   const [remaining, setRemaining] = useState(0);
   const [note, setNote] = useState<string | null>(null);
@@ -48,11 +52,73 @@ export default function App() {
     window.setTimeout(() => setNote((current) => (current === message ? null : current)), 2600);
   }, []);
 
+  /**
+   * Frame-stepped export. Nothing here runs against a clock, so the file has
+   * exactly the frames asked for at exactly the rate asked for.
+   */
+  const encodeExport = useCallback(
+    async (container: EncodeContainer) => {
+      const canvas = stageCanvasRef.current;
+      const stage = stageHandleRef.current;
+      if (!canvas || !stage) return;
+
+      const s = settingsRef.current;
+      const fps = s.record.fps;
+      const frames = Math.max(1, Math.round(durationSeconds(s) * fps));
+
+      busyRef.current = true;
+      cancelExportRef.current = false;
+      renderFullRef.current = true;
+      setExporting({ done: 0, total: frames });
+
+      // No waiting on animation frames anywhere in here. renderFrame paints
+      // synchronously at full resolution, so the export survives a background
+      // tab, which is exactly where realtime capture falls apart.
+      stage.begin();
+      const blob = await encodeFrames({
+        canvas,
+        container,
+        fps,
+        frames,
+        bitrate: s.record.bitsPerSecond,
+        drawFrame: (frame) => stage.renderFrame(frame, fps),
+        onProgress: (done) => setExporting({ done, total: frames }),
+        cancelled: () => cancelExportRef.current,
+      });
+      stage.end();
+
+      renderFullRef.current = false;
+      busyRef.current = false;
+      setExporting(null);
+
+      if (!blob || blob.size < 1024) {
+        flash('encode failed');
+        return;
+      }
+      download(blob, `globe-${stamp()}.${await actualExtension(blob, container)}`);
+      flash(cancelExportRef.current ? 'saved, stopped early' : 'saved');
+    },
+    [flash]
+  );
+
   const startRecording = useCallback(async () => {
     const canvas = stageCanvasRef.current;
     if (!canvas || busyRef.current) return;
 
     const s = settingsRef.current;
+
+    // WebCodecs cannot keep an alpha channel, verified across avc, vp9, vp8,
+    // hevc and av1. MediaRecorder's VP9 webm is the only browser encoder that
+    // does, so a transparent stage goes through it and everything else takes
+    // the frame-stepped path.
+    if (!s.background.transparent) {
+      const container = (s.record.format === 'gif' ? 'webm' : s.record.format) as EncodeContainer;
+      if (await canEncode(container)) {
+        await encodeExport(container);
+        return;
+      }
+    }
+
     const capture = pickBrowserCapture(s.record.format, s.background.transparent);
     if (!capture) {
       flash('no recordable format in this browser');
@@ -106,15 +172,20 @@ export default function App() {
     }
     download(blob, `globe-${stamp()}.${await actualExtension(blob, mimeType)}`);
     flash(wentHidden ? 'saved, frames may be missing' : 'saved');
-  }, [flash]);
+  }, [flash, encodeExport]);
 
   const saveStill = useCallback(async () => {
     const canvas = stageCanvasRef.current;
-    if (!canvas || busyRef.current) return;
+    const stage = stageHandleRef.current;
+    if (!canvas || !stage || busyRef.current) return;
     busyRef.current = true;
     renderFullRef.current = true;
-    await waitFrames(2);
+    // Suspend the preview loop first, otherwise it can repaint at preview
+    // resolution between this composite and the snapshot.
+    stage.suspend();
+    stage.composeFull();
     canvas.toBlob((blob) => {
+      stage.resume();
       renderFullRef.current = false;
       busyRef.current = false;
       if (!blob) {
@@ -190,24 +261,29 @@ export default function App() {
         event.preventDefault();
         void startRecording();
       }
-      if (event.key === 'Escape') handleRef.current?.stop();
+      if (event.key === 'Escape') {
+        cancelExportRef.current = true;
+        handleRef.current?.stop();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [startRecording]);
 
   const { width: outWidth, height: outHeight } = outputSize(settings);
-  const panelHidden = Boolean(recording) && settings.record.hidePanel;
+  const panelHidden = Boolean(recording || exporting) && settings.record.hidePanel;
   // Asking for a transparent stage in a container that cannot store alpha.
   const alphaLost = settings.background.transparent && !carriesAlpha(settings.record.format);
 
   // What `r` will actually produce, shown up front rather than as a flash
   // after the file has already landed in Downloads under a misleading name.
+  // Opaque exports encode the chosen container directly; only alpha is forced
+  // down a different route, because no browser encoder keeps an alpha channel
+  // outside MediaRecorder's webm.
   const capturesAs = useMemo(() => {
-    const capture = pickBrowserCapture(settings.record.format, settings.background.transparent);
-    if (!capture) return null;
-    const container = capture.mimeType.includes('mp4') ? 'mp4' : 'webm';
-    return container === settings.record.format ? null : container;
+    const format = settings.record.format;
+    if (settings.background.transparent) return format === 'webm' ? null : 'webm';
+    return format === 'gif' ? 'webm' : null;
   }, [settings.record.format, settings.background.transparent]);
 
   return (
@@ -217,7 +293,18 @@ export default function App() {
         canvasRef={stageCanvasRef}
         recordAnchorRef={recordAnchorRef}
         renderFullRef={renderFullRef}
+        handleRef={stageHandleRef}
       />
+
+      {exporting ? (
+        <div className="pill" role="status">
+          <span className="pill__dot" />
+          <span>
+            {exporting.done}/{exporting.total}
+          </span>
+          <span className="pill__hint">esc to stop</span>
+        </div>
+      ) : null}
 
       {recording ? (
         <div className="pill" role="status">
