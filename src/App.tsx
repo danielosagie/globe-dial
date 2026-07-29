@@ -5,8 +5,8 @@ import { GlobeStage } from './GlobeStage';
 import { durationSeconds, outputSize, toStage, useGlobeDials, type DialValues } from './lib/dials';
 import { rgbLiteral } from './lib/color';
 import {
+  actualExtension,
   download,
-  extensionFor,
   pickBrowserCapture,
   recordCanvas,
   stamp,
@@ -104,7 +104,7 @@ export default function App() {
       flash('no frames captured, keep the tab in front');
       return;
     }
-    download(blob, `globe-${stamp()}.${extensionFor(mimeType)}`);
+    download(blob, `globe-${stamp()}.${await actualExtension(blob, mimeType)}`);
     flash(wentHidden ? 'saved, frames may be missing' : 'saved');
   }, [flash]);
 
@@ -201,6 +201,15 @@ export default function App() {
   // Asking for a transparent stage in a container that cannot store alpha.
   const alphaLost = settings.background.transparent && !carriesAlpha(settings.record.format);
 
+  // What `r` will actually produce, shown up front rather than as a flash
+  // after the file has already landed in Downloads under a misleading name.
+  const capturesAs = useMemo(() => {
+    const capture = pickBrowserCapture(settings.record.format, settings.background.transparent);
+    if (!capture) return null;
+    const container = capture.mimeType.includes('mp4') ? 'mp4' : 'webm';
+    return container === settings.record.format ? null : container;
+  }, [settings.record.format, settings.background.transparent]);
+
   return (
     <main className={`page${settings.background.transparent ? ' page--checker' : ''}`}>
       <GlobeStage
@@ -223,7 +232,10 @@ export default function App() {
           <span>
             {outWidth} &times; {outHeight}
           </span>
-          <span>{settings.record.format}</span>
+          <span>
+            {settings.record.format}
+            {capturesAs ? <span className="readout__warn"> &rarr; {capturesAs}</span> : null}
+          </span>
           <span>{durationSeconds(settings).toFixed(1)}s</span>
           <span>{settings.record.fps} fps</span>
           {alphaLost ? (

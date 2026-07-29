@@ -44,6 +44,10 @@ export const DIALS = {
     base: { type: 'color', default: '#3a3a3a' },
     marker: { type: 'color', default: '#fb6415' },
     glow: { type: 'color', default: '#0b0b0c' },
+    // cobe's glow is an atmosphere that fades into the backdrop, so it only
+    // looks right when it matches what sits behind the globe. Leaving these
+    // out of sync is what turns the halo into a hard coloured ring.
+    glowFollowsBackground: true,
   },
   spin: {
     on: true,

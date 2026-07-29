@@ -85,8 +85,16 @@ browser instead.
 Press `r`, or use Record in the panel. `Esc` stops early.
 
 MediaRecorder can only write mp4 or webm, and only webm carries alpha, so a
-transparent stage or a `mov`/`gif` selection is captured as webm and the readout
-says so. Frame rate is capped by the display refresh rate whatever fps says.
+transparent stage or a `mov`/`gif` selection is captured as webm. The readout
+shows this as `mp4 → webm` before you record rather than after the file lands.
+Safari and Firefox cannot record mp4 at all and fall back the same way.
+
+Files are named from the container's magic bytes, so the extension always
+matches what is inside. Renaming a `.webm` to `.mp4` does not transcode it, it
+just mislabels it. To actually get an mp4 of a transparent stage you have to
+give up the transparency, or render a mov and convert.
+
+Frame rate is capped by the display refresh rate whatever fps says.
 
 - Duration is `record.turns` multiplied by `spin.secondsPerTurn`.
 - Rotation is driven from the record start time rather than accumulated per
@@ -103,6 +111,26 @@ start when the tab is hidden and reports a short file rather than saving one.
 `Copy config` puts a ready `COBEOptions` object on the clipboard with colors
 already converted to cobe's 0-1 triplets. `Save PNG` writes the current frame at
 full resolution. DialKit's own Copy exports the raw panel JSON.
+
+## Glow
+
+cobe's glow is an atmosphere that fades into whatever sits behind the globe, not
+a light source drawn on top of it. It only looks right when `color.glow` matches
+the backdrop. Set them apart and the halo stops reading as a glow and starts
+reading as a hard coloured ring around the sphere.
+
+`color.glowFollowsBackground` is on by default and keeps the two in step. Turn it
+off only if you are deliberately after a rim.
+
+On a transparent stage there is no backdrop to match, so the glow blends into
+whatever you composite onto later. Keep `stage.background` set to the colour you
+intend to land on and leave the toggle on, even while transparent.
+
+The glow is written with premultiplied alpha and a real falloff, so it composites
+correctly anywhere alpha is honoured. Players that flatten alpha instead of
+compositing it, including some desktop and chat-app players, show the glow at
+full colour strength as a solid ring. That is the player, not the export. Check a
+transparent render in a browser before concluding it is wrong.
 
 ## Text
 

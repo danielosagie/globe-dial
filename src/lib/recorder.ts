@@ -31,11 +31,35 @@ export function pickBrowserCapture(format: string, transparent: boolean): Browse
   for (const mimeType of candidates) {
     if (MediaRecorder.isTypeSupported(mimeType)) return { mimeType, note };
   }
+
+  // Safari and Firefox have no mp4 MediaRecorder. Falling back beats refusing.
+  if (candidates === MP4) {
+    for (const mimeType of WEBM) {
+      if (MediaRecorder.isTypeSupported(mimeType)) {
+        return { mimeType, note: 'this browser cannot record mp4, captured webm' };
+      }
+    }
+  }
   return null;
 }
 
 export function extensionFor(mimeType: string): string {
   return mimeType.includes('mp4') ? 'mp4' : 'webm';
+}
+
+/**
+ * Name the file after what is actually inside it. The requested mime type is
+ * a request, not a guarantee, and a webm called .mp4 reads as a broken export.
+ */
+export async function actualExtension(blob: Blob, mimeType: string): Promise<string> {
+  try {
+    const head = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
+    if (head[0] === 0x1a && head[1] === 0x45 && head[2] === 0xdf && head[3] === 0xa3) return 'webm';
+    if (String.fromCharCode(head[4], head[5], head[6], head[7]) === 'ftyp') return 'mp4';
+  } catch {
+    // Fall through to the declared type.
+  }
+  return extensionFor(mimeType);
 }
 
 export type RecordHandle = {

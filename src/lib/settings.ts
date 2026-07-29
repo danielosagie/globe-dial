@@ -75,7 +75,10 @@ export function toStage(v: DialValues): StageSettings {
       opacity: v.globe.opacity,
       baseColor: toRgb(v.color.base, [0.23, 0.23, 0.23]),
       markerColor: toRgb(v.color.marker, [0.98, 0.39, 0.08]),
-      glowColor: toRgb(v.color.glow, [0.04, 0.04, 0.05]),
+      glowColor: toRgb(
+        v.color.glowFollowsBackground ? v.stage.background : v.color.glow,
+        [0.04, 0.04, 0.05]
+      ),
       markers: resolveMarkers(v.markers.preset, v.markers.custom, v.markers.size),
     },
     spin: {
