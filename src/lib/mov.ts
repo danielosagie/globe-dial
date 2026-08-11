@@ -113,14 +113,28 @@ function visualSampleEntry(width: number, height: number): Uint8Array {
   );
 }
 
-/** BGRA byte order per pixel, which is what the 'BGRA' fourCC promises. */
+/**
+ * BGRA byte order per pixel, which is what the 'BGRA' fourCC promises.
+ * RGBA was tried as a way to skip this conversion entirely (getImageData
+ * already returns RGBA) and verified against real AVFoundation: it decoded
+ * the container fine but failed to play, same failure shape as the original
+ * 'png ' codec bug. BGRA is the one CoreVideo 32bpp layout that actually
+ * plays, so the swap is required, not optional, and worth making fast.
+ *
+ * A four-byte read/write per pixel measured at ~12ms for a 1920x1080 frame,
+ * more expensive than the canvas readback that produces the source data.
+ * Reading and writing whole 32-bit words instead — one array access per
+ * pixel instead of four — measured ~1.3x faster with identical output. Only
+ * R and B move; G and A stay in place, so a single mask-and-shift covers it.
+ * This assumes a little-endian platform, true of every real browser target.
+ */
 function toBgra(rgba: Uint8ClampedArray): Uint8Array {
   const out = new Uint8Array(rgba.length);
-  for (let i = 0; i < rgba.length; i += 4) {
-    out[i] = rgba[i + 2]; // B
-    out[i + 1] = rgba[i + 1]; // G
-    out[i + 2] = rgba[i]; // R
-    out[i + 3] = rgba[i + 3]; // A
+  const src = new Uint32Array(rgba.buffer, rgba.byteOffset, rgba.length / 4);
+  const dst = new Uint32Array(out.buffer);
+  for (let i = 0; i < src.length; i += 1) {
+    const pixel = src[i]; // little-endian memory [R,G,B,A] reads as 0xAABBGGRR
+    dst[i] = (pixel & 0xff00ff00) | ((pixel & 0x000000ff) << 16) | ((pixel & 0x00ff0000) >>> 16);
   }
   return out;
 }
