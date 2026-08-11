@@ -70,8 +70,29 @@ Alpha is a property of the codec, not a flag. Verified behaviour:
 There is no transparent mp4. h264 cannot hold alpha, and while HEVC can in
 principle, `hevc_videotoolbox -alpha_quality` was tried here and emitted a plain
 `yuv420p` track with no alpha layer, byte for byte identical with and without
-the flag. `.mov` is the same ISO base container as `.mp4` and every editor opens
-it, so ProRes 4444 is the answer rather than a workaround.
+the flag.
+
+### Transparent mov from the browser
+
+No browser can *encode* alpha. `VideoEncoder.isConfigSupported` reports
+`alpha: 'keep'` unsupported for avc, hevc, vp9, vp8 and av1, and MediaRecorder
+only carries alpha in webm. There is no ProRes encoder in a browser either.
+
+So a transparent export skips video encoding altogether. Each frame is taken as
+a PNG, which already has an alpha channel and is lossless, and those frames are
+muxed into a QuickTime container with the `png ` codec by `src/lib/mov.ts`. That
+is a real QuickTime format, read with transparency by QuickTime, Final Cut,
+Premiere, After Effects and Resolve.
+
+Verified end to end: ffmpeg reports `codec_name=png`, `pix_fmt=rgba`, and every
+frame decodes with corner alpha 0 and centre alpha 255.
+
+Because frames are stored individually, size scales with resolution and length.
+A 320 px 48 frame clip is about 1 MB. At 1800 px it will be far larger, so drop
+`stage.scale` or shorten the clip if the file matters more than the fidelity.
+Pick `webm` instead when the target is a web page: VP9 alpha through
+MediaRecorder is much smaller, and that is the one path that still needs the tab
+in front.
 
 Turn on `stage.transparent`, pick `mov` or `webm`, and render. The panel warns in
 the readout when the stage is transparent but the chosen format cannot store it,
@@ -101,13 +122,8 @@ full speed in a background tab. It is also frequently faster than realtime.
 Files are named from the container's magic bytes, so the extension always
 matches what is inside. Renaming a `.webm` to `.mp4` does not transcode it.
 
-The one exception is a transparent stage. No browser encoder keeps an alpha
-channel, verified with `VideoEncoder.isConfigSupported` across avc, vp9, vp8,
-hevc and av1, all of which report `alpha: 'keep'` unsupported. MediaRecorder's
-VP9 webm is the only browser path that carries alpha, so a transparent stage
-goes through it and the readout says `mp4 → webm` up front. That path is
-realtime, so it needs the tab in front. For a transparent export you actually
-want to ship, use `pnpm render` and get ProRes 4444.
+A transparent stage exports as `.mov`, muxed here rather than encoded by the
+browser. See below for why.
 
 - Duration is `record.turns` multiplied by `spin.secondsPerTurn`.
 - Rotation is driven from the record start time rather than accumulated per

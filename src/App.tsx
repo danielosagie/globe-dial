@@ -3,6 +3,7 @@ import { DialRoot } from 'dialkit';
 import 'dialkit/styles.css';
 import { GlobeStage, type StageHandle } from './GlobeStage';
 import { canEncode, encodeFrames, type EncodeContainer } from './lib/encode';
+import { encodePngMov } from './lib/mov';
 import { durationSeconds, outputSize, toStage, useGlobeDials, type DialValues } from './lib/dials';
 import { rgbLiteral } from './lib/color';
 import {
@@ -13,7 +14,6 @@ import {
   stamp,
   type RecordHandle,
 } from './lib/recorder';
-import { carriesAlpha } from './lib/formats';
 
 /** Give the compositor time to swap to full output resolution before capture. */
 function waitFrames(count: number) {
@@ -101,16 +101,59 @@ export default function App() {
     [flash]
   );
 
+  /** Transparent exports, muxed as PNG frames in a QuickTime container. */
+  const exportPngMov = useCallback(async () => {
+    const canvas = stageCanvasRef.current;
+    const stage = stageHandleRef.current;
+    if (!canvas || !stage) return;
+
+    const s = settingsRef.current;
+    const fps = s.record.fps;
+    const frames = Math.max(1, Math.round(durationSeconds(s) * fps));
+
+    busyRef.current = true;
+    cancelExportRef.current = false;
+    renderFullRef.current = true;
+    setExporting({ done: 0, total: frames });
+
+    stage.begin();
+    const result = await encodePngMov({
+      canvas,
+      fps,
+      frames,
+      drawFrame: (frame) => stage.renderFrame(frame, fps),
+      onProgress: (done) => setExporting({ done, total: frames }),
+      cancelled: () => cancelExportRef.current,
+    });
+    stage.end();
+
+    renderFullRef.current = false;
+    busyRef.current = false;
+    setExporting(null);
+
+    if (!result) {
+      flash('mov encode failed');
+      return;
+    }
+    download(result.blob, `globe-${stamp()}.mov`);
+    flash(`saved ${result.frames} frames`);
+  }, [flash]);
+
   const startRecording = useCallback(async () => {
     const canvas = stageCanvasRef.current;
     if (!canvas || busyRef.current) return;
 
     const s = settingsRef.current;
 
-    // WebCodecs cannot keep an alpha channel, verified across avc, vp9, vp8,
-    // hevc and av1. MediaRecorder's VP9 webm is the only browser encoder that
-    // does, so a transparent stage goes through it and everything else takes
-    // the frame-stepped path.
+    // WebCodecs cannot keep an alpha channel, verified across avc, hevc, vp9,
+    // vp8 and av1. A transparent stage therefore goes to the PNG mov muxer,
+    // unless webm was asked for specifically, which MediaRecorder can do with
+    // VP9 alpha and which is far smaller for web use.
+    if (s.background.transparent && s.record.format !== 'webm') {
+      await exportPngMov();
+      return;
+    }
+
     if (!s.background.transparent) {
       const container = (s.record.format === 'gif' ? 'webm' : s.record.format) as EncodeContainer;
       if (await canEncode(container)) {
@@ -273,7 +316,8 @@ export default function App() {
   const { width: outWidth, height: outHeight } = outputSize(settings);
   const panelHidden = Boolean(recording || exporting) && settings.record.hidePanel;
   // Asking for a transparent stage in a container that cannot store alpha.
-  const alphaLost = settings.background.transparent && !carriesAlpha(settings.record.format);
+  // mp4 is the only choice that cannot hold alpha in any container we can write.
+  const alphaLost = settings.background.transparent && settings.record.format === 'gif';
 
   // What `r` will actually produce, shown up front rather than as a flash
   // after the file has already landed in Downloads under a misleading name.
@@ -282,7 +326,8 @@ export default function App() {
   // outside MediaRecorder's webm.
   const capturesAs = useMemo(() => {
     const format = settings.record.format;
-    if (settings.background.transparent) return format === 'webm' ? null : 'webm';
+    // Transparent exports go out as a PNG mov, so only mp4 and gif shift.
+    if (settings.background.transparent) return format === 'mov' || format === 'webm' ? null : 'mov';
     return format === 'gif' ? 'webm' : null;
   }, [settings.record.format, settings.background.transparent]);
 
