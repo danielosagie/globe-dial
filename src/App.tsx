@@ -174,41 +174,41 @@ export default function App() {
     const frames = Math.max(1, Math.round(durationSeconds(s) * fps));
     const { width, height } = outputSize(s);
     const estimatedBytes = estimateMovBytes(width, height, frames);
+    const estimate = formatBytes(estimatedBytes);
+    const detail = `${frames.toLocaleString()} frames at ${width.toLocaleString()} × ${height.toLocaleString()}`;
     let writer: RawMovWriter | null = null;
     setAlphaPreview(null);
 
-    if (estimatedBytes > RAW_MOV_MEMORY_LIMIT_BYTES) {
-      const estimate = formatBytes(estimatedBytes);
-      const detail = `${frames.toLocaleString()} frames at ${width.toLocaleString()} × ${height.toLocaleString()}`;
+    /**
+     * The one thing every threshold guess has in common: it can't know the
+     * user's actual available disk quota, only estimate bytes. Real Chromium
+     * origin storage quota is typically a share of free disk space, so this
+     * is asked for both when the estimate is deliberately large AND as a
+     * recovery path when an in-memory attempt hits that quota for real.
+     */
+    const promptForDestination = async (reason: string): Promise<'writer' | 'stop'> => {
       const picker = getSaveFilePicker();
-
       if (!picker) {
         window.alert(
-          `This would be ~${estimate} of uncompressed BGRA data (${detail}) and will likely hang this tab. This browser cannot stream raw MOV directly to disk. Lower Stage scale, duration, fps, or turns until the estimate is below ${formatBytes(RAW_MOV_MEMORY_LIMIT_BYTES)}, or use pnpm render.`
+          `${reason} This browser cannot stream raw MOV directly to disk. Lower Stage scale, duration, fps, or turns, or use pnpm render.`
         );
         flash(`mov blocked at ~${estimate}`);
-        return;
+        return 'stop';
       }
-
       const streamToDisk = window.confirm(
-        `This would be ~${estimate} of uncompressed BGRA data (${detail}). Buffering it in this tab will likely exhaust memory and hang it.\n\nChoose OK to save directly to disk while frames render, or Cancel to lower Stage scale, duration, fps, or turns.`
+        `${reason}\n\nChoose OK to save directly to disk while frames render, or Cancel to lower Stage scale, duration, fps, or turns.`
       );
       if (!streamToDisk) {
         flash(`mov cancelled before capture (~${estimate})`);
-        return;
+        return 'stop';
       }
-
       try {
         const handle = await picker({
           suggestedName: `globe-${stamp()}.mov`,
-          types: [
-            {
-              description: 'QuickTime movie',
-              accept: { 'video/quicktime': ['.mov'] },
-            },
-          ],
+          types: [{ description: 'QuickTime movie', accept: { 'video/quicktime': ['.mov'] } }],
         });
         writer = await handle.createWritable();
+        return 'writer';
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') {
           flash('mov cancelled before capture');
@@ -216,41 +216,78 @@ export default function App() {
           console.error('[mov] save picker failed', error);
           flash('could not open a mov destination');
         }
-        return;
+        return 'stop';
       }
+    };
+
+    if (estimatedBytes > RAW_MOV_MEMORY_LIMIT_BYTES) {
+      const outcome = await promptForDestination(
+        `This would be ~${estimate} of uncompressed BGRA data (${detail}). Buffering it in this tab will likely exhaust memory and hang it.`
+      );
+      if (outcome === 'stop') return;
     }
 
-    busyRef.current = true;
-    cancelExportRef.current = false;
-    renderFullRef.current = true;
-    setExporting({ done: 0, total: frames });
+    // One capture attempt: begin the frame-stepped stage, run the chosen
+    // encoder, and guarantee cleanup regardless of outcome. Called once for
+    // the normal attempt and, on a quota failure with no writer yet, once
+    // more after a destination is picked, so this is a function rather than
+    // inlined so those two calls can't drift out of sync with each other.
+    const attempt = async (): Promise<{
+      result: { frames: number } | null;
+      failureReason: string | null;
+      isQuotaError: boolean;
+    }> => {
+      busyRef.current = true;
+      cancelExportRef.current = false;
+      renderFullRef.current = true;
+      setExporting({ done: 0, total: frames });
 
-    let result: { frames: number } | null = null;
-    // Surfaced in the flash message on failure. A generic "mov encode
-    // failed" with nothing behind it is undiagnosable from the outside -
-    // this is what actually let us find out what broke, not just that it did.
-    let failureReason: string | null = null;
-    stage.begin();
-    try {
-      const options = {
-        canvas,
-        fps,
-        frames,
-        drawFrame: (frame: number) => stage.renderFrame(frame, fps),
-        onProgress: (done: number) => setExporting({ done, total: frames }),
-        cancelled: () => cancelExportRef.current,
-      };
-      result = writer
-        ? await encodeRawMovToWriter({ ...options, writer })
-        : await encodeRawMov(options);
-    } catch (error) {
-      console.error('[mov] failed', error);
-      failureReason = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-    } finally {
-      stage.end();
-      renderFullRef.current = false;
-      busyRef.current = false;
-      setExporting(null);
+      let result: { frames: number } | null = null;
+      let failureReason: string | null = null;
+      let isQuotaError = false;
+      stage.begin();
+      try {
+        const options = {
+          canvas,
+          fps,
+          frames,
+          drawFrame: (frame: number) => stage.renderFrame(frame, fps),
+          onProgress: (done: number) => setExporting({ done, total: frames }),
+          cancelled: () => cancelExportRef.current,
+        };
+        result = writer
+          ? await encodeRawMovToWriter({ ...options, writer })
+          : await encodeRawMov(options);
+      } catch (error) {
+        isQuotaError = error instanceof DOMException && error.name === 'QuotaExceededError';
+        console.error('[mov] failed', error);
+        failureReason = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      } finally {
+        stage.end();
+        renderFullRef.current = false;
+        busyRef.current = false;
+        setExporting(null);
+      }
+      return { result, failureReason, isQuotaError };
+    };
+
+    let { result, failureReason, isQuotaError } = await attempt();
+
+    // A quota failure here is real evidence, not a guess: building this Blob
+    // genuinely exceeded whatever this browser's origin storage quota is
+    // right now, on this machine, which no fixed byte threshold could have
+    // predicted in advance. Writing straight to a real file sidesteps that
+    // quota entirely, so it is offered as the actual fix, not a retry hoping
+    // for a different outcome.
+    if (!result && isQuotaError && !writer) {
+      const outcome = await promptForDestination(
+        `Building this in the tab's memory hit this browser's storage limit (~${estimate}, ${detail}).`
+      );
+      if (outcome === 'writer') {
+        ({ result, failureReason, isQuotaError } = await attempt());
+      } else {
+        return;
+      }
     }
 
     if (!result) {

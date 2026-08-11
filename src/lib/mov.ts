@@ -261,6 +261,12 @@ async function captureRawFrames(
 ): Promise<{ count: number; frameBytes: number; width: number; height: number } | null> {
   const { canvas, frames, drawFrame, onProgress, cancelled } = options;
 
+  // Draw before measuring. The canvas is only resized to the real output
+  // size as a side effect of a frame actually being painted (renderFrame
+  // -> composite), so reading canvas.width/height first can capture
+  // whatever stale size — preview resolution, a previous export, anything —
+  // happened to be sitting there, silently ignoring the dialed-in settings.
+  drawFrame(0);
   const width = canvas.width;
   const height = canvas.height;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
