@@ -71,6 +71,67 @@ body {
   pointer-events: none;
 }
 
+/*
+ * Real pixels from the file that was just saved, not a claim about them.
+ * The thumbnail carries its own checkerboard rather than relying on the
+ * page's, so alpha reads correctly even if the stage has since toggled back
+ * to opaque or settings changed since the export.
+ */
+.alpha-preview {
+  position: fixed;
+  bottom: 52px;
+  left: 16px;
+  width: 160px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.6);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.alpha-preview__thumb {
+  background-color: #1c1c1f;
+  background-image:
+    linear-gradient(45deg, #242428 25%, transparent 25%),
+    linear-gradient(-45deg, #242428 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #242428 75%),
+    linear-gradient(-45deg, transparent 75%, #242428 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+  line-height: 0;
+}
+
+.alpha-preview__thumb img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.alpha-preview__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  color: #e4e4e7;
+  font-size: 11px;
+}
+
+.alpha-preview__close {
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+  padding: 0 2px;
+}
+
+.alpha-preview__close:hover {
+  opacity: 1;
+}
+
 .readout {
   position: fixed;
   bottom: 16px;

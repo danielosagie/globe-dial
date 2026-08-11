@@ -88,7 +88,7 @@ export const DIALS = {
   record: {
     start: { type: 'action', label: 'Record' },
     turns: [1, 1, 8, 1],
-    fps: { type: 'select', options: FPS_OPTIONS, default: '120' },
+    fps: { type: 'select', options: FPS_OPTIONS, default: '30' },
     format: { type: 'select', options: FORMAT_OPTIONS, default: 'mov' },
     mbps: [16, 2, 80, 1],
     hidePanel: true,

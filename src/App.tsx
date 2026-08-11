@@ -50,6 +50,27 @@ function formatBytes(bytes: number): string {
   return `${Math.round(bytes / 1_000_000)} MB`;
 }
 
+/**
+ * A small thumbnail of the stage canvas's current pixels, alpha intact, as a
+ * PNG data URL. Must run synchronously right after an export finishes and
+ * before anything else touches the canvas: the live preview loop resumes on
+ * the next animation frame and will overwrite this content otherwise.
+ */
+function capturePreview(canvas: HTMLCanvasElement): string | null {
+  const THUMB = 160;
+  const scale = Math.min(1, THUMB / Math.max(canvas.width, canvas.height));
+  const w = Math.max(1, Math.round(canvas.width * scale));
+  const h = Math.max(1, Math.round(canvas.height * scale));
+  const thumb = document.createElement('canvas');
+  thumb.width = w;
+  thumb.height = h;
+  const ctx = thumb.getContext('2d');
+  if (!ctx) return null;
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(canvas, 0, 0, w, h);
+  return thumb.toDataURL('image/png');
+}
+
 export default function App() {
   const actionRef = useRef<(action: string) => void>(() => {});
   const values = useGlobeDials((action) => actionRef.current(action));
@@ -72,6 +93,10 @@ export default function App() {
   const [recording, setRecording] = useState<{ endsAt: number } | null>(null);
   const [remaining, setRemaining] = useState(0);
   const [note, setNote] = useState<string | null>(null);
+  // Proof, not a promise: an actual frame from the file just saved, shown on
+  // the checkerboard so alpha is something you see, not something you take
+  // on faith or go verify in QuickTime.
+  const [alphaPreview, setAlphaPreview] = useState<string | null>(null);
 
   const flash = useCallback((message: string) => {
     setNote(message);
@@ -143,6 +168,7 @@ export default function App() {
     const { width, height } = outputSize(s);
     const estimatedBytes = estimateMovBytes(width, height, frames);
     let writer: RawMovWriter | null = null;
+    setAlphaPreview(null);
 
     if (estimatedBytes > RAW_MOV_MEMORY_LIMIT_BYTES) {
       const estimate = formatBytes(estimatedBytes);
@@ -219,6 +245,10 @@ export default function App() {
       flash('mov encode failed');
       return;
     }
+    // Read before anything else touches the canvas: the live preview loop
+    // resumes as soon as the browser gets control back and would paint over
+    // this at preview resolution otherwise.
+    if (s.background.transparent) setAlphaPreview(capturePreview(canvas));
     const mb = Math.round(estimateMovBytes(width, height, result.frames) / 1_000_000);
     if (!writer) {
       const memoryResult = result as Awaited<ReturnType<typeof encodeRawMov>>;
@@ -233,6 +263,7 @@ export default function App() {
     if (!canvas || busyRef.current) return;
 
     const s = settingsRef.current;
+    setAlphaPreview(null);
 
     // WebCodecs cannot keep an alpha channel, verified across avc, hevc, vp9,
     // vp8 and av1, and there is no in-browser ProRes encoder either. A
@@ -289,6 +320,9 @@ export default function App() {
     const timer = window.setTimeout(() => handle.stop(), durationMs);
 
     const blob = await handle.done;
+    // Same ordering constraint as the mov path: capture before anything else
+    // touches the canvas, while it still shows the last captured frame.
+    if (s.background.transparent) setAlphaPreview(capturePreview(canvas));
 
     window.clearTimeout(timer);
     document.removeEventListener('visibilitychange', watchVisibility);
@@ -465,6 +499,25 @@ export default function App() {
             Stop
           </button>
           <span className="pill__hint">esc</span>
+        </div>
+      ) : null}
+
+      {alphaPreview ? (
+        <div className="alpha-preview">
+          <div className="alpha-preview__thumb">
+            <img src={alphaPreview} alt="Frame from the file just saved, alpha preserved" />
+          </div>
+          <div className="alpha-preview__row">
+            <span>from the saved file</span>
+            <button
+              className="alpha-preview__close"
+              type="button"
+              onClick={() => setAlphaPreview(null)}
+              aria-label="Dismiss preview"
+            >
+              &times;
+            </button>
+          </div>
         </div>
       ) : null}
 

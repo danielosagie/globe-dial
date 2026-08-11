@@ -128,8 +128,22 @@ function toBgra(rgba: Uint8ClampedArray): Uint8Array {
 export type MovResult = { blob: Blob; frames: number };
 export type MovFileResult = { frames: number };
 
-/** Beyond this, raw frames must go straight to disk instead of tab memory. */
-export const RAW_MOV_MEMORY_LIMIT_BYTES = 512_000_000;
+/**
+ * Beyond this, raw frames must go straight to disk instead of tab memory.
+ *
+ * The in-memory path never allocates one contiguous buffer for the whole
+ * movie: each frame is a separate Uint8Array, and the final Blob is built
+ * from those parts rather than a single concatenated copy, so there is no
+ * doubling-reallocation spike the way a naive growable buffer would have.
+ * 1.5 GB of discrete ~8 MB frame objects is well inside what a modern tab
+ * survives; the failure this guards against was two orders of magnitude
+ * past that. Sized so the app's own defaults (1920x1080, 30 fps, a 4 second
+ * turn = 1.0 GB) never cross it — the native save-file picker this triggers
+ * is a real OS dialog outside any in-page Escape or Stop control's reach,
+ * so it must stay reserved for exports someone deliberately dials up to,
+ * never the out-of-the-box recording experience.
+ */
+export const RAW_MOV_MEMORY_LIMIT_BYTES = 1_500_000_000;
 
 export type RawMovWriter = {
   write: (

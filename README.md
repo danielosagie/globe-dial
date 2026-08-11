@@ -53,9 +53,9 @@ poster, and `pnpm studio` to scrub the composition.
 Renders need a named OpenGL backend, set in `remotion.config.ts` to `angle`.
 On a machine with no display, pass `--gl=swangle`.
 
-At 120 fps the default 4 second turn is 480 frames. `spin.previewSpeed` lets you
-spin the live preview at 0.25x-8x while tuning without changing any recorded
-frame.
+At the default 30 fps a 4 second turn is 120 frames; bump `record.fps` for a
+smoother result. `spin.previewSpeed` lets you spin the live preview at
+0.25x-8x while tuning without changing any recorded frame.
 
 ## Transparent background
 
