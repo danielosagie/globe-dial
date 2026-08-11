@@ -129,21 +129,67 @@ export type MovResult = { blob: Blob; frames: number };
 export type MovFileResult = { frames: number };
 
 /**
- * Beyond this, raw frames must go straight to disk instead of tab memory.
+ * Fallback ceiling, used only when the browser refuses to report a quota.
  *
- * The in-memory path never allocates one contiguous buffer for the whole
- * movie: each frame is a separate Uint8Array, and the final Blob is built
- * from those parts rather than a single concatenated copy, so there is no
- * doubling-reallocation spike the way a naive growable buffer would have.
- * 1.5 GB of discrete ~8 MB frame objects is well inside what a modern tab
- * survives; the failure this guards against was two orders of magnitude
- * past that. Sized so the app's own defaults (1920x1080, 30 fps, a 4 second
- * turn = 1.0 GB) never cross it — the native save-file picker this triggers
- * is a real OS dialog outside any in-page Escape or Stop control's reach,
- * so it must stay reserved for exports someone deliberately dials up to,
- * never the out-of-the-box recording experience.
+ * This number used to be the whole decision, and that was the bug: the app's
+ * own defaults (1920x1080, 30 fps, one 4 second turn) come to 995 MB, which
+ * slipped under it, so a default recording took the in-memory path, rendered
+ * all 120 frames, and only then died in `new Blob()` with QuotaExceededError.
+ * No fixed constant could have caught that, because the real limit is
+ * Chromium's per-origin storage quota — a share of free disk that moves with
+ * the machine. `availableStorageBytes` asks for the real number now, and this
+ * is what's left when there is no one to ask.
  */
 export const RAW_MOV_MEMORY_LIMIT_BYTES = 1_500_000_000;
+
+/**
+ * Fraction of reported free quota an in-memory export may claim.
+ *
+ * A margin, not a measurement, and worth saying so: `estimate()` is
+ * documented as approximate and padded, other tabs on the same origin spend
+ * from the same pot, and a Blob this size is registered while its frames are
+ * still alive in the JS heap. Spending the last byte of a number that is
+ * itself approximate is how you land back on the failure above.
+ */
+const MEMORY_QUOTA_HEADROOM = 0.8;
+
+/**
+ * Bytes this origin can still store, or null when the browser won't say.
+ *
+ * Chromium reports a share of free disk here, so it differs per machine and
+ * per day. That is exactly why it has to be asked for at export time rather
+ * than guessed at build time.
+ */
+export async function availableStorageBytes(): Promise<number | null> {
+  const storage = navigator.storage;
+  if (!storage?.estimate) return null;
+  try {
+    const { quota, usage } = await storage.estimate();
+    if (typeof quota !== 'number') return null;
+    return Math.max(0, quota - (usage ?? 0));
+  } catch {
+    // Some embedded and privacy-hardened contexts throw rather than answer.
+    return null;
+  }
+}
+
+/**
+ * Whether a raw export of this size can be built in tab memory, plus the
+ * measured headroom when there was one, so the caller can say what it found
+ * instead of just refusing.
+ */
+export async function fitsInTabMemory(
+  estimatedBytes: number
+): Promise<{ fits: boolean; availableBytes: number | null }> {
+  const availableBytes = await availableStorageBytes();
+  if (availableBytes === null) {
+    return { fits: estimatedBytes <= RAW_MOV_MEMORY_LIMIT_BYTES, availableBytes };
+  }
+  return {
+    fits: estimatedBytes <= availableBytes * MEMORY_QUOTA_HEADROOM,
+    availableBytes,
+  };
+}
 
 export type RawMovWriter = {
   write: (

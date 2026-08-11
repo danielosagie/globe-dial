@@ -7,7 +7,7 @@ import {
   encodeRawMov,
   encodeRawMovToWriter,
   estimateMovBytes,
-  RAW_MOV_MEMORY_LIMIT_BYTES,
+  fitsInTabMemory,
   type RawMovWriter,
 } from './lib/mov';
 import { durationSeconds, outputSize, toStage, useGlobeDials, type DialValues } from './lib/dials';
@@ -180,11 +180,8 @@ export default function App() {
     setAlphaPreview(null);
 
     /**
-     * The one thing every threshold guess has in common: it can't know the
-     * user's actual available disk quota, only estimate bytes. Real Chromium
-     * origin storage quota is typically a share of free disk space, so this
-     * is asked for both when the estimate is deliberately large AND as a
-     * recovery path when an in-memory attempt hits that quota for real.
+     * Asked both when the export is measured as too large to buffer AND as a
+     * recovery path when an in-memory attempt hits the quota anyway.
      */
     const promptForDestination = async (reason: string): Promise<'writer' | 'stop'> => {
       const picker = getSaveFilePicker();
@@ -220,9 +217,16 @@ export default function App() {
       }
     };
 
-    if (estimatedBytes > RAW_MOV_MEMORY_LIMIT_BYTES) {
+    // Ask the browser what it will actually hold, before spending the render.
+    // The previous fixed ceiling let a default-settings export draw every
+    // frame and then die in `new Blob()`, which is the most expensive possible
+    // moment to discover the file never had anywhere to go.
+    const { fits, availableBytes } = await fitsInTabMemory(estimatedBytes);
+    if (!fits) {
       const outcome = await promptForDestination(
-        `This would be ~${estimate} of uncompressed BGRA data (${detail}). Buffering it in this tab will likely exhaust memory and hang it.`
+        availableBytes === null
+          ? `This would be ~${estimate} of uncompressed BGRA data (${detail}). Buffering it in this tab will likely exhaust memory and hang it.`
+          : `This would be ~${estimate} of uncompressed BGRA data (${detail}), and this browser has only about ${formatBytes(availableBytes)} of storage left. Buffering it in this tab will fail.`
       );
       if (outcome === 'stop') return;
     }
@@ -291,6 +295,17 @@ export default function App() {
     }
 
     if (!result) {
+      // A raw quota message names no budget, no limit and no ask, which leaves
+      // nothing to act on. Chromium stages a writable file in origin storage
+      // before committing it, so even the disk path can run out; say what ran
+      // out and what actually shrinks it.
+      if (isQuotaError) {
+        window.alert(
+          `Ran out of browser storage writing this ${estimate} export (${detail}).\n\nLower Stage scale, duration, fps, or turns, or use pnpm render for a compressed ProRes 4444 file with no browser quota involved.`
+        );
+        flash(`mov ran out of storage at ~${estimate}`);
+        return;
+      }
       flash(failureReason ? `mov encode failed: ${failureReason}` : 'mov encode failed: 0 frames captured');
       return;
     }
