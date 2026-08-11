@@ -21,7 +21,7 @@ Every dial except `globe.resolution` is read live inside cobe's `onRender`, so
 turning knobs never rebuilds the WebGL context.
 
 The preview renders at native device pixels rather than at full output size.
-Downsampling a 1800px canvas into a 650px box is what made text look rough.
+Downsampling a 1920px canvas into a 650px box is what made text look rough.
 Export briefly switches the same canvas up to full resolution first.
 
 ## Getting a video out
@@ -53,8 +53,9 @@ poster, and `pnpm studio` to scrub the composition.
 Renders need a named OpenGL backend, set in `remotion.config.ts` to `angle`.
 On a machine with no display, pass `--gl=swangle`.
 
-At 120 fps the default 24 second turn is 2880 frames. Shorten
-`spin.secondsPerTurn` while you are iterating.
+At 120 fps the default 4 second turn is 480 frames. `spin.previewSpeed` lets you
+spin the live preview at 0.25x-8x while tuning without changing any recorded
+frame.
 
 ## Transparent background
 
@@ -97,10 +98,17 @@ succeeds with the correct alpha values at the correct pixels.
 
 The cost is real and worth knowing before you export: this is uncompressed
 video, width &times; height &times; 4 bytes a frame, nothing more. The panel
-shows the exact file size before you record. At 1800px that is 13 MB a frame,
-so keep browser mov exports short and small, or drop `stage.scale`. For
-anything longer, `pnpm render` gives you real ProRes 4444 compression through
-an actual encoder, still AVFoundation-native, at any size.
+shows the exact file size before you record. At the default 1920 &times; 1080
+that is about 8.3 MB a frame, so keep browser mov exports short and small, or
+drop `stage.scale`. For anything longer, `pnpm render` gives you real ProRes
+4444 compression through an actual encoder, still AVFoundation-native, at any
+size.
+
+Raw MOV exports above 512 MB never start silently. The app shows the exact
+estimated size and frame dimensions first. Chromium can then stream each BGRA
+frame straight to a user-selected file, keeping only one frame in tab memory;
+browsers without the File System Access API block the oversized export and ask
+you to lower scale, duration, fps, or turns.
 
 Pick `webm` instead when the target is a web page: VP9 alpha through
 MediaRecorder is dramatically smaller, and that is the one alpha path that
@@ -121,7 +129,8 @@ browser instead.
 
 ### In the browser
 
-Press `r`, or use Record in the panel. `Esc` stops early.
+Press `r`, or use Record in the panel. Use the on-screen Stop button or press
+`Esc` to stop early.
 
 This encodes rather than records. Frames are drawn and handed to a WebCodecs
 encoder one at a time through mediabunny, so the file holds exactly the frames

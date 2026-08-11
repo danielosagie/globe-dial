@@ -19,12 +19,27 @@ const RESOLUTION_OPTIONS = ['512', '768', '1024', '1536', '2048'];
  * Remotion default props both be derived from this one object.
  */
 export const DIALS = {
-  stage: {
-    width: [900, 320, 1920, 10],
-    height: [900, 320, 1920, 10],
-    scale: [2, 1, 3, 1],
-    background: { type: 'color', default: '#0b0b0c' },
-    transparent: false,
+  spin: {
+    on: true,
+    secondsPerTurn: [4, 2, 120, 0.5],
+    // This scales only the wall-clock preview path. Every exporter remains
+    // frame-stepped from secondsPerTurn and fps.
+    previewSpeed: [1, 0.25, 8, 0.25],
+    startAngle: [0, 0, 360, 1],
+    drag: true,
+    dragPerTurn: [600, 100, 3000, 10],
+    stiffness: [100, 10, 400, 5],
+    damping: [30, 5, 120, 1],
+    mass: [1, 0.2, 5, 0.1],
+  },
+  color: {
+    base: { type: 'color', default: '#3a3a3a' },
+    marker: { type: 'color', default: '#fb6415' },
+    glow: { type: 'color', default: '#0b0b0c' },
+    // cobe's glow is an atmosphere that fades into the backdrop, so it only
+    // looks right when it matches what sits behind the globe. Leaving these
+    // out of sync is what turns the halo into a hard coloured ring.
+    glowFollowsBackground: true,
   },
   globe: {
     size: [560, 120, 1920, 5],
@@ -40,24 +55,12 @@ export const DIALS = {
     tilt: [0.3, -1, 1, 0.01],
     opacity: [1, 0, 1, 0.01],
   },
-  color: {
-    base: { type: 'color', default: '#3a3a3a' },
-    marker: { type: 'color', default: '#fb6415' },
-    glow: { type: 'color', default: '#0b0b0c' },
-    // cobe's glow is an atmosphere that fades into the backdrop, so it only
-    // looks right when it matches what sits behind the globe. Leaving these
-    // out of sync is what turns the halo into a hard coloured ring.
-    glowFollowsBackground: true,
-  },
-  spin: {
-    on: true,
-    secondsPerTurn: [24, 2, 120, 0.5],
-    startAngle: [0, 0, 360, 1],
-    drag: true,
-    dragPerTurn: [600, 100, 3000, 10],
-    stiffness: [100, 10, 400, 5],
-    damping: [30, 5, 120, 1],
-    mass: [1, 0.2, 5, 0.1],
+  stage: {
+    width: [1920, 320, 1920, 10],
+    height: [1080, 320, 1920, 10],
+    scale: [1, 1, 3, 1],
+    background: { type: 'color', default: '#0b0b0c' },
+    transparent: true,
   },
   markers: {
     preset: { type: 'select', options: MARKER_OPTIONS, default: 'world' },
@@ -86,7 +89,7 @@ export const DIALS = {
     start: { type: 'action', label: 'Record' },
     turns: [1, 1, 8, 1],
     fps: { type: 'select', options: FPS_OPTIONS, default: '120' },
-    format: { type: 'select', options: FORMAT_OPTIONS, default: 'mp4' },
+    format: { type: 'select', options: FORMAT_OPTIONS, default: 'mov' },
     mbps: [16, 2, 80, 1],
     hidePanel: true,
   },

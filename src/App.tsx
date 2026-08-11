@@ -3,7 +3,13 @@ import { DialRoot } from 'dialkit';
 import 'dialkit/styles.css';
 import { GlobeStage, type StageHandle } from './GlobeStage';
 import { canEncode, encodeFrames, type EncodeContainer } from './lib/encode';
-import { encodeRawMov, estimateMovBytes } from './lib/mov';
+import {
+  encodeRawMov,
+  encodeRawMovToWriter,
+  estimateMovBytes,
+  RAW_MOV_MEMORY_LIMIT_BYTES,
+  type RawMovWriter,
+} from './lib/mov';
 import { durationSeconds, outputSize, toStage, useGlobeDials, type DialValues } from './lib/dials';
 import { rgbLiteral } from './lib/color';
 import {
@@ -22,6 +28,26 @@ function waitFrames(count: number) {
     const step = () => (left-- <= 0 ? resolve() : requestAnimationFrame(step));
     requestAnimationFrame(step);
   });
+}
+
+type SaveFilePicker = (options: {
+  suggestedName: string;
+  types: { description: string; accept: Record<string, string[]> }[];
+}) => Promise<{ createWritable: () => Promise<RawMovWriter> }>;
+
+function getSaveFilePicker(): SaveFilePicker | null {
+  const picker = (
+    window as typeof window & { showSaveFilePicker?: SaveFilePicker }
+  ).showSaveFilePicker;
+  return picker?.bind(window) ?? null;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1_000_000_000) {
+    const digits = bytes >= 10_000_000_000 ? 1 : 2;
+    return `${(bytes / 1_000_000_000).toFixed(digits)} GB`;
+  }
+  return `${Math.round(bytes / 1_000_000)} MB`;
 }
 
 export default function App() {
@@ -81,8 +107,8 @@ export default function App() {
         fps,
         frames,
         bitrate: s.record.bitsPerSecond,
-        drawFrame: (frame) => stage.renderFrame(frame, fps),
-        onProgress: (done) => setExporting({ done, total: frames }),
+        drawFrame: (frame: number) => stage.renderFrame(frame, fps),
+        onProgress: (done: number) => setExporting({ done, total: frames }),
         cancelled: () => cancelExportRef.current,
       });
       stage.end();
@@ -115,34 +141,91 @@ export default function App() {
     const fps = s.record.fps;
     const frames = Math.max(1, Math.round(durationSeconds(s) * fps));
     const { width, height } = outputSize(s);
+    const estimatedBytes = estimateMovBytes(width, height, frames);
+    let writer: RawMovWriter | null = null;
+
+    if (estimatedBytes > RAW_MOV_MEMORY_LIMIT_BYTES) {
+      const estimate = formatBytes(estimatedBytes);
+      const detail = `${frames.toLocaleString()} frames at ${width.toLocaleString()} × ${height.toLocaleString()}`;
+      const picker = getSaveFilePicker();
+
+      if (!picker) {
+        window.alert(
+          `This would be ~${estimate} of uncompressed BGRA data (${detail}) and will likely hang this tab. This browser cannot stream raw MOV directly to disk. Lower Stage scale, duration, fps, or turns until the estimate is below ${formatBytes(RAW_MOV_MEMORY_LIMIT_BYTES)}, or use pnpm render.`
+        );
+        flash(`mov blocked at ~${estimate}`);
+        return;
+      }
+
+      const streamToDisk = window.confirm(
+        `This would be ~${estimate} of uncompressed BGRA data (${detail}). Buffering it in this tab will likely exhaust memory and hang it.\n\nChoose OK to save directly to disk while frames render, or Cancel to lower Stage scale, duration, fps, or turns.`
+      );
+      if (!streamToDisk) {
+        flash(`mov cancelled before capture (~${estimate})`);
+        return;
+      }
+
+      try {
+        const handle = await picker({
+          suggestedName: `globe-${stamp()}.mov`,
+          types: [
+            {
+              description: 'QuickTime movie',
+              accept: { 'video/quicktime': ['.mov'] },
+            },
+          ],
+        });
+        writer = await handle.createWritable();
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          flash('mov cancelled before capture');
+        } else {
+          console.error('[mov] save picker failed', error);
+          flash('could not open a mov destination');
+        }
+        return;
+      }
+    }
 
     busyRef.current = true;
     cancelExportRef.current = false;
     renderFullRef.current = true;
     setExporting({ done: 0, total: frames });
 
+    let result: { frames: number } | null = null;
     stage.begin();
-    const result = await encodeRawMov({
-      canvas,
-      fps,
-      frames,
-      drawFrame: (frame) => stage.renderFrame(frame, fps),
-      onProgress: (done) => setExporting({ done, total: frames }),
-      cancelled: () => cancelExportRef.current,
-    });
-    stage.end();
-
-    renderFullRef.current = false;
-    busyRef.current = false;
-    setExporting(null);
+    try {
+      const options = {
+        canvas,
+        fps,
+        frames,
+        drawFrame: (frame: number) => stage.renderFrame(frame, fps),
+        onProgress: (done: number) => setExporting({ done, total: frames }),
+        cancelled: () => cancelExportRef.current,
+      };
+      result = writer
+        ? await encodeRawMovToWriter({ ...options, writer })
+        : await encodeRawMov(options);
+    } catch (error) {
+      console.error('[mov] failed', error);
+    } finally {
+      stage.end();
+      renderFullRef.current = false;
+      busyRef.current = false;
+      setExporting(null);
+    }
 
     if (!result) {
       flash('mov encode failed');
       return;
     }
     const mb = Math.round(estimateMovBytes(width, height, result.frames) / 1_000_000);
-    download(result.blob, `globe-${stamp()}.mov`);
-    flash(`saved ${result.frames} frames, ${mb} MB`);
+    if (!writer) {
+      const memoryResult = result as Awaited<ReturnType<typeof encodeRawMov>>;
+      if (!memoryResult) return;
+      download(memoryResult.blob, `globe-${stamp()}.mov`);
+    }
+    flash(`${writer ? 'saved to disk' : 'saved'} ${result.frames} frames, ${mb} MB`);
   }, [flash]);
 
   const startRecording = useCallback(async () => {
@@ -287,6 +370,11 @@ export default function App() {
     }
   }, [flash]);
 
+  const stopActiveCapture = useCallback(() => {
+    cancelExportRef.current = true;
+    handleRef.current?.stop();
+  }, []);
+
   actionRef.current = (action: string) => {
     if (action === 'record.start') void startRecording();
     else if (action === 'output.still') void saveStill();
@@ -312,13 +400,12 @@ export default function App() {
         void startRecording();
       }
       if (event.key === 'Escape') {
-        cancelExportRef.current = true;
-        handleRef.current?.stop();
+        stopActiveCapture();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [startRecording]);
+  }, [startRecording, stopActiveCapture]);
 
   const { width: outWidth, height: outHeight } = outputSize(settings);
   const panelHidden = Boolean(recording || exporting) && settings.record.hidePanel;
@@ -363,7 +450,10 @@ export default function App() {
           <span>
             {exporting.done}/{exporting.total}
           </span>
-          <span className="pill__hint">esc to stop</span>
+          <button className="pill__stop" type="button" onClick={stopActiveCapture}>
+            Stop
+          </button>
+          <span className="pill__hint">esc</span>
         </div>
       ) : null}
 
@@ -371,7 +461,10 @@ export default function App() {
         <div className="pill" role="status">
           <span className="pill__dot" />
           <span>{(remaining / 1000).toFixed(1)}s</span>
-          <span className="pill__hint">esc to stop</span>
+          <button className="pill__stop" type="button" onClick={stopActiveCapture}>
+            Stop
+          </button>
+          <span className="pill__hint">esc</span>
         </div>
       ) : null}
 

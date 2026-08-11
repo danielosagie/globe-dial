@@ -45,6 +45,12 @@ function u32(...values: number[]): Uint8Array {
   return out;
 }
 
+function u64(value: number): Uint8Array {
+  const out = new Uint8Array(8);
+  new DataView(out.buffer).setBigUint64(0, BigInt(value));
+  return out;
+}
+
 function concat(parts: Uint8Array[]): Uint8Array {
   const size = parts.reduce((total, part) => total + part.length, 0);
   const out = new Uint8Array(size);
@@ -59,6 +65,15 @@ function concat(parts: Uint8Array[]): Uint8Array {
 function box(type: string, ...payload: Uint8Array[]): Uint8Array {
   const body = concat(payload);
   return concat([u32(body.length + 8), fourcc(type), body]);
+}
+
+/** `mdat` is the only box that can exceed the classic 32-bit size field. */
+function mediaDataHeader(payloadBytes: number, forceExtended = false): Uint8Array {
+  const compactSize = payloadBytes + 8;
+  if (!forceExtended && compactSize <= 0xffffffff) {
+    return concat([u32(compactSize), fourcc('mdat')]);
+  }
+  return concat([u32(1), fourcc('mdat'), u64(payloadBytes + 16)]);
 }
 
 /** Identity matrix, the only one QuickTime ever needs here. */
@@ -111,51 +126,64 @@ function toBgra(rgba: Uint8ClampedArray): Uint8Array {
 }
 
 export type MovResult = { blob: Blob; frames: number };
+export type MovFileResult = { frames: number };
+
+/** Beyond this, raw frames must go straight to disk instead of tab memory. */
+export const RAW_MOV_MEMORY_LIMIT_BYTES = 512_000_000;
+
+export type RawMovWriter = {
+  write: (
+    data: Uint8Array | { type: 'seek'; position: number }
+  ) => Promise<void>;
+  close: () => Promise<void>;
+  abort: (reason?: unknown) => Promise<void>;
+};
 
 /** width * height * 4 * frameCount, exactly, before any frame is drawn. */
 export function estimateMovBytes(width: number, height: number, frames: number): number {
   return width * height * 4 * frames;
 }
 
-export async function encodeRawMov(options: {
+/**
+ * Let React paint progress and let input events update the cancellation ref.
+ * MessageChannel yields to the browser without tying export to rAF, which can
+ * stop running when the tab is in the background.
+ */
+function yieldToMainThread(): Promise<void> {
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      channel.port1.close();
+      channel.port2.close();
+      resolve();
+    };
+    channel.port2.postMessage(null);
+  });
+}
+
+type RawMovOptions = {
   canvas: HTMLCanvasElement;
   fps: number;
   frames: number;
   drawFrame: (frame: number) => void;
   onProgress?: (done: number) => void;
   cancelled?: () => boolean;
-}): Promise<MovResult | null> {
-  const { canvas, fps, frames, drawFrame, onProgress, cancelled } = options;
+};
 
-  const width = canvas.width;
-  const height = canvas.height;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return null;
-
+function movieMetadata(
+  width: number,
+  height: number,
+  fps: number,
+  count: number,
+  firstSampleOffset: number
+): Uint8Array {
   const frameBytes = width * height * 4;
-  const mediaData = new Uint8Array(frameBytes * frames);
-  let count = 0;
-
-  for (let frame = 0; frame < frames; frame += 1) {
-    if (cancelled?.()) break;
-    drawFrame(frame);
-    const { data } = ctx.getImageData(0, 0, width, height);
-    mediaData.set(toBgra(data), count * frameBytes);
-    count += 1;
-    onProgress?.(count);
-  }
-
-  if (!count) return null;
-  const usedBytes = count === frames ? mediaData : mediaData.subarray(0, count * frameBytes);
   const duration = count;
-
-  const ftyp = box('ftyp', fourcc('qt  '), u32(0x00000200), fourcc('qt  '));
-  const mdat = box('mdat', usedBytes);
-  // stco holds absolute file offsets, and the layout is ftyp then mdat.
-  const firstSampleOffset = ftyp.length + 8;
 
   const stsd = box('stsd', u32(0), u32(1), visualSampleEntry(width, height));
   const stts = box('stts', u32(0), u32(1), u32(count, 1));
+  // All samples form one contiguous chunk. That keeps the offset table tiny,
+  // even for a streamed file larger than 4 GB.
   const stsc = box('stsc', u32(0), u32(1), u32(1, count, 1));
   // Every raw frame is exactly the same size, so the compact constant-size
   // form applies: no 4-byte-per-sample size table needed.
@@ -209,12 +237,109 @@ export async function encodeRawMov(options: {
     u32(0, 0, 0, 0, 0, 0), // predefined
     u32(2) // next track id
   );
-  const moov = box('moov', mvhd, trak);
+
+  return box('moov', mvhd, trak);
+}
+
+async function captureRawFrames(
+  options: RawMovOptions,
+  consume: (frame: Uint8Array) => void | Promise<void>
+): Promise<{ count: number; frameBytes: number; width: number; height: number } | null> {
+  const { canvas, frames, drawFrame, onProgress, cancelled } = options;
+
+  const width = canvas.width;
+  const height = canvas.height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+
+  const frameBytes = width * height * 4;
+  let count = 0;
+
+  for (let frame = 0; frame < frames; frame += 1) {
+    if (cancelled?.()) break;
+    drawFrame(frame);
+    const { data } = ctx.getImageData(0, 0, width, height);
+    await consume(toBgra(data));
+    count += 1;
+    onProgress?.(count);
+    await yieldToMainThread();
+  }
+
+  return { count, frameBytes, width, height };
+}
+
+export async function encodeRawMov(options: RawMovOptions): Promise<MovResult | null> {
+  // Keep only frames actually drawn. Besides avoiding a full-size allocation
+  // up front, this is what lets a cancelled export finish as a valid short MOV.
+  const mediaFrames: Uint8Array[] = [];
+  const capture = await captureRawFrames(options, (frame) => {
+    mediaFrames.push(frame);
+  });
+  if (!capture?.count) return null;
+
+  const { count, frameBytes, width, height } = capture;
+
+  const ftyp = box('ftyp', fourcc('qt  '), u32(0x00000200), fourcc('qt  '));
+  const mdatHeader = mediaDataHeader(frameBytes * count);
+  // stco holds absolute file offsets, and the layout is ftyp then mdat.
+  const firstSampleOffset = ftyp.length + mdatHeader.length;
+  const moov = movieMetadata(width, height, options.fps, count, firstSampleOffset);
 
   return {
-    blob: new Blob([concat([ftyp, mdat, moov]).buffer as ArrayBuffer], {
-      type: 'video/quicktime',
-    }),
+    // Passing frames as separate Blob parts avoids allocating another
+    // contiguous copy of the entire movie when a partial export is saved.
+    blob: new Blob(
+      [ftyp, mdatHeader, ...mediaFrames, moov].map((part) => part.buffer as ArrayBuffer),
+      {
+        type: 'video/quicktime',
+      }
+    ),
     frames: count,
   };
+}
+
+/**
+ * Stream raw samples directly to a user-selected file. The fixed 16-byte mdat
+ * header is rewritten once the final frame count is known, then moov is
+ * appended. Only one raw frame is retained in JavaScript at any moment.
+ */
+export async function encodeRawMovToWriter(
+  options: RawMovOptions & { writer: RawMovWriter }
+): Promise<MovFileResult | null> {
+  const { writer } = options;
+  const ftyp = box('ftyp', fourcc('qt  '), u32(0x00000200), fourcc('qt  '));
+  const mdatOffset = ftyp.length;
+  const placeholder = mediaDataHeader(0, true);
+
+  try {
+    await writer.write(ftyp);
+    await writer.write(placeholder);
+
+    const capture = await captureRawFrames(options, (frame) => writer.write(frame));
+    if (!capture?.count) {
+      await writer.abort();
+      return null;
+    }
+
+    const { count, frameBytes, width, height } = capture;
+    const payloadBytes = frameBytes * count;
+    const firstSampleOffset = ftyp.length + placeholder.length;
+    const mediaEnd = firstSampleOffset + payloadBytes;
+    const moov = movieMetadata(width, height, options.fps, count, firstSampleOffset);
+
+    await writer.write({ type: 'seek', position: mdatOffset });
+    await writer.write(mediaDataHeader(payloadBytes, true));
+    await writer.write({ type: 'seek', position: mediaEnd });
+    await writer.write(moov);
+    await writer.close();
+
+    return { frames: count };
+  } catch (error) {
+    try {
+      await writer.abort(error);
+    } catch {
+      // The stream may already have torn itself down after a disk error.
+    }
+    throw error;
+  }
 }

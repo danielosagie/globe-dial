@@ -109,6 +109,26 @@ body {
   opacity: 0.6;
 }
 
+.pill__stop {
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  border-radius: 999px;
+  padding: 3px 10px;
+  background: #fafafa;
+  color: #18181b;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.pill__stop:hover {
+  background: #fecaca;
+}
+
+.pill__stop:focus-visible {
+  outline: 2px solid #fb7185;
+  outline-offset: 2px;
+}
+
 .pill__dot {
   width: 7px;
   height: 7px;

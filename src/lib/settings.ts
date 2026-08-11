@@ -27,6 +27,7 @@ export type StageSettings = {
   spin: {
     on: boolean;
     secondsPerTurn: number;
+    previewSpeed: number;
     startAngle: number;
     drag: boolean;
     /** Drag distance in css px for one full turn. */
@@ -84,6 +85,7 @@ export function toStage(v: DialValues): StageSettings {
     spin: {
       on: v.spin.on,
       secondsPerTurn: v.spin.secondsPerTurn,
+      previewSpeed: v.spin.previewSpeed ?? 1,
       startAngle: v.spin.startAngle,
       drag: v.spin.drag,
       dragPerTurn: v.spin.dragPerTurn,

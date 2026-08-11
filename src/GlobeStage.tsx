@@ -122,7 +122,10 @@ export function GlobeStage({
           angleRef.current = anchorBaseRef.current + ((now - anchor) / period) * TAU;
         } else {
           const last = lastFrameRef.current ?? now;
-          angleRef.current += ((now - last) / period) * TAU;
+          // A tuning aid for the live preview only. Frame-stepped exports take
+          // the branch above, and realtime recording has a non-null anchor, so
+          // previewSpeed can never change pixels written to a recording.
+          angleRef.current += ((now - last) / period) * TAU * s.spin.previewSpeed;
         }
       }
       lastFrameRef.current = now;
@@ -169,7 +172,8 @@ export function GlobeStage({
     if (stage.style.width !== cssWidth) stage.style.width = cssWidth;
     if (stage.style.height !== cssHeight) stage.style.height = cssHeight;
 
-    const ctx = contextRef.current ?? stage.getContext('2d');
+    const ctx =
+      contextRef.current ?? stage.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
     contextRef.current = ctx;
 
