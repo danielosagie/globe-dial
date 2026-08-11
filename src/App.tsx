@@ -125,25 +125,32 @@ export default function App() {
       // No waiting on animation frames anywhere in here. renderFrame paints
       // synchronously at full resolution, so the export survives a background
       // tab, which is exactly where realtime capture falls apart.
+      let blob: Blob | null = null;
+      let failureReason: string | null = null;
       stage.begin();
-      const blob = await encodeFrames({
-        canvas,
-        container,
-        fps,
-        frames,
-        bitrate: s.record.bitsPerSecond,
-        drawFrame: (frame: number) => stage.renderFrame(frame, fps),
-        onProgress: (done: number) => setExporting({ done, total: frames }),
-        cancelled: () => cancelExportRef.current,
-      });
-      stage.end();
-
-      renderFullRef.current = false;
-      busyRef.current = false;
-      setExporting(null);
+      try {
+        blob = await encodeFrames({
+          canvas,
+          container,
+          fps,
+          frames,
+          bitrate: s.record.bitsPerSecond,
+          drawFrame: (frame: number) => stage.renderFrame(frame, fps),
+          onProgress: (done: number) => setExporting({ done, total: frames }),
+          cancelled: () => cancelExportRef.current,
+        });
+      } catch (error) {
+        console.error('[encode] failed', error);
+        failureReason = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      } finally {
+        stage.end();
+        renderFullRef.current = false;
+        busyRef.current = false;
+        setExporting(null);
+      }
 
       if (!blob || blob.size < 1024) {
-        flash('encode failed');
+        flash(failureReason ? `encode failed: ${failureReason}` : 'encode failed');
         return;
       }
       download(blob, `globe-${stamp()}.${await actualExtension(blob, container)}`);
@@ -219,6 +226,10 @@ export default function App() {
     setExporting({ done: 0, total: frames });
 
     let result: { frames: number } | null = null;
+    // Surfaced in the flash message on failure. A generic "mov encode
+    // failed" with nothing behind it is undiagnosable from the outside -
+    // this is what actually let us find out what broke, not just that it did.
+    let failureReason: string | null = null;
     stage.begin();
     try {
       const options = {
@@ -234,6 +245,7 @@ export default function App() {
         : await encodeRawMov(options);
     } catch (error) {
       console.error('[mov] failed', error);
+      failureReason = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
     } finally {
       stage.end();
       renderFullRef.current = false;
@@ -242,7 +254,7 @@ export default function App() {
     }
 
     if (!result) {
-      flash('mov encode failed');
+      flash(failureReason ? `mov encode failed: ${failureReason}` : 'mov encode failed: 0 frames captured');
       return;
     }
     // Read before anything else touches the canvas: the live preview loop
