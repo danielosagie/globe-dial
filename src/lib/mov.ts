@@ -1,16 +1,26 @@
 /**
- * A QuickTime muxer for PNG video, which is how this tool gets a transparent
- * .mov out of a browser.
+ * A QuickTime muxer for uncompressed BGRA video, which is how this tool gets
+ * a transparent .mov out of a browser.
  *
  * Nothing in a browser can encode an alpha channel into a normal video codec:
  * WebCodecs reports `alpha: 'keep'` unsupported for avc, hevc, vp9, vp8 and
- * av1, and MediaRecorder only carries alpha in webm. QuickTime's `png ` codec
- * sidesteps that entirely by storing each frame as a PNG, which already has an
- * alpha channel, is lossless, and is read with transparency by QuickTime,
- * Final Cut, Premiere, After Effects and Resolve.
+ * av1, and MediaRecorder only carries alpha in webm. A first attempt at this
+ * muxer stored each frame as PNG under the classic QuickTime 'png ' codec,
+ * which is a legacy Component Manager codec: modern QuickTime Player is built
+ * entirely on AVFoundation, which does not implement it. That version parsed
+ * as a valid container (AVFoundation's own asset loader reported the track
+ * and its format description correctly) but could not decode a single frame,
+ * confirmed with AVFoundation's own image generator, not just ffprobe.
  *
- * Frames are PNG compressed rather than raw, so a mostly transparent globe
- * stays reasonable. Raw RGBA at 1800px would be 13 MB per frame.
+ * 'BGRA' is not a codec in that sense at all, it is a registered raw pixel
+ * format (`kCVPixelFormatType_32BGRA`), so there is no decoder to be missing.
+ * Verified the same way: AVFoundation reports the asset playable and produces
+ * a correct image with real alpha values, not just a parseable container.
+ *
+ * The cost is real: uncompressed 32bpp video is width * height * 4 bytes per
+ * frame, no compression at all. At 1800px that is 13 MB a frame. Keep
+ * transparent browser exports short and small, or use `pnpm render` for
+ * ProRes 4444, which is genuinely compressed and still AVFoundation-native.
  */
 
 const encoder = new TextEncoder();
@@ -19,10 +29,6 @@ function fourcc(type: string): Uint8Array {
   const out = new Uint8Array(4);
   for (let i = 0; i < 4; i += 1) out[i] = type.charCodeAt(i);
   return out;
-}
-
-function u8(...values: number[]): Uint8Array {
-  return new Uint8Array(values);
 }
 
 function u16(...values: number[]): Uint8Array {
@@ -67,28 +73,51 @@ function compressorName(name: string): Uint8Array {
   return out;
 }
 
+/**
+ * A raw pixel format sample entry has no wrapped codec box, unlike 'png '
+ * which nests one. Field layout and values here were read back byte for byte
+ * from a known-working reference file (ffmpeg's own '-pix_fmt bgra -c:v
+ * rawvideo' mov output) rather than assembled from the spec alone.
+ */
 function visualSampleEntry(width: number, height: number): Uint8Array {
   return box(
-    'png ',
-    u8(0, 0, 0, 0, 0, 0), // reserved
+    'BGRA',
+    u16(0, 0, 0), // reserved
     u16(1), // data reference index
     u16(0, 0), // version, revision
-    u32(0), // vendor
+    fourcc('appl'), // vendor
     u32(0), // temporal quality
-    u32(512), // spatial quality
+    u32(1024), // spatial quality
     u16(width, height),
     u32(0x00480000, 0x00480000), // 72 dpi
     u32(0), // data size
     u16(1), // frame count
-    compressorName('PNG'),
-    u16(32), // depth 32 signals colour plus alpha
-    u16(0xffff) // colour table id -1
+    compressorName('Globe BGRA'),
+    u16(32), // depth: 32 signals colour plus alpha
+    u16(0xffff) // colour table id -1, no palette
   );
+}
+
+/** BGRA byte order per pixel, which is what the 'BGRA' fourCC promises. */
+function toBgra(rgba: Uint8ClampedArray): Uint8Array {
+  const out = new Uint8Array(rgba.length);
+  for (let i = 0; i < rgba.length; i += 4) {
+    out[i] = rgba[i + 2]; // B
+    out[i + 1] = rgba[i + 1]; // G
+    out[i + 2] = rgba[i]; // R
+    out[i + 3] = rgba[i + 3]; // A
+  }
+  return out;
 }
 
 export type MovResult = { blob: Blob; frames: number };
 
-export async function encodePngMov(options: {
+/** width * height * 4 * frameCount, exactly, before any frame is drawn. */
+export function estimateMovBytes(width: number, height: number, frames: number): number {
+  return width * height * 4 * frames;
+}
+
+export async function encodeRawMov(options: {
   canvas: HTMLCanvasElement;
   fps: number;
   frames: number;
@@ -98,37 +127,39 @@ export async function encodePngMov(options: {
 }): Promise<MovResult | null> {
   const { canvas, fps, frames, drawFrame, onProgress, cancelled } = options;
 
-  const samples: Uint8Array[] = [];
+  const width = canvas.width;
+  const height = canvas.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  const frameBytes = width * height * 4;
+  const mediaData = new Uint8Array(frameBytes * frames);
+  let count = 0;
+
   for (let frame = 0; frame < frames; frame += 1) {
     if (cancelled?.()) break;
     drawFrame(frame);
-    // toBlob keeps the alpha channel and never touches requestAnimationFrame,
-    // so this runs at full speed in a background tab.
-    const png = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, 'image/png')
-    );
-    if (!png) return null;
-    samples.push(new Uint8Array(await png.arrayBuffer()));
-    onProgress?.(frame + 1);
+    const { data } = ctx.getImageData(0, 0, width, height);
+    mediaData.set(toBgra(data), count * frameBytes);
+    count += 1;
+    onProgress?.(count);
   }
 
-  if (!samples.length) return null;
-
-  const width = canvas.width;
-  const height = canvas.height;
-  const count = samples.length;
+  if (!count) return null;
+  const usedBytes = count === frames ? mediaData : mediaData.subarray(0, count * frameBytes);
   const duration = count;
 
   const ftyp = box('ftyp', fourcc('qt  '), u32(0x00000200), fourcc('qt  '));
-  const mediaData = concat(samples);
-  const mdat = box('mdat', mediaData);
+  const mdat = box('mdat', usedBytes);
   // stco holds absolute file offsets, and the layout is ftyp then mdat.
   const firstSampleOffset = ftyp.length + 8;
 
   const stsd = box('stsd', u32(0), u32(1), visualSampleEntry(width, height));
   const stts = box('stts', u32(0), u32(1), u32(count, 1));
   const stsc = box('stsc', u32(0), u32(1), u32(1, count, 1));
-  const stsz = box('stsz', u32(0), u32(0), u32(count), u32(...samples.map((s) => s.length)));
+  // Every raw frame is exactly the same size, so the compact constant-size
+  // form applies: no 4-byte-per-sample size table needed.
+  const stsz = box('stsz', u32(0), u32(frameBytes), u32(count));
   const stco = box('stco', u32(0), u32(1), u32(firstSampleOffset));
   const stbl = box('stbl', stsd, stts, stsc, stsz, stco);
 
@@ -144,7 +175,7 @@ export async function encodePngMov(options: {
     u32(0),
     fourcc('vide'),
     u32(0, 0, 0),
-    u8(...encoder.encode('Globe'), 0)
+    new Uint8Array([...encoder.encode('Globe'), 0])
   );
   const mdia = box('mdia', mdhd, hdlr, minf);
 

@@ -3,7 +3,7 @@ import { DialRoot } from 'dialkit';
 import 'dialkit/styles.css';
 import { GlobeStage, type StageHandle } from './GlobeStage';
 import { canEncode, encodeFrames, type EncodeContainer } from './lib/encode';
-import { encodePngMov } from './lib/mov';
+import { encodeRawMov, estimateMovBytes } from './lib/mov';
 import { durationSeconds, outputSize, toStage, useGlobeDials, type DialValues } from './lib/dials';
 import { rgbLiteral } from './lib/color';
 import {
@@ -101,8 +101,12 @@ export default function App() {
     [flash]
   );
 
-  /** Transparent exports, muxed as PNG frames in a QuickTime container. */
-  const exportPngMov = useCallback(async () => {
+  /**
+   * Transparent exports, muxed as uncompressed BGRA frames in a QuickTime
+   * container. There is no encoder here, so this is not a bitrate choice,
+   * it is genuinely width * height * 4 bytes per frame.
+   */
+  const exportRawMov = useCallback(async () => {
     const canvas = stageCanvasRef.current;
     const stage = stageHandleRef.current;
     if (!canvas || !stage) return;
@@ -110,6 +114,7 @@ export default function App() {
     const s = settingsRef.current;
     const fps = s.record.fps;
     const frames = Math.max(1, Math.round(durationSeconds(s) * fps));
+    const { width, height } = outputSize(s);
 
     busyRef.current = true;
     cancelExportRef.current = false;
@@ -117,7 +122,7 @@ export default function App() {
     setExporting({ done: 0, total: frames });
 
     stage.begin();
-    const result = await encodePngMov({
+    const result = await encodeRawMov({
       canvas,
       fps,
       frames,
@@ -135,8 +140,9 @@ export default function App() {
       flash('mov encode failed');
       return;
     }
+    const mb = Math.round(estimateMovBytes(width, height, result.frames) / 1_000_000);
     download(result.blob, `globe-${stamp()}.mov`);
-    flash(`saved ${result.frames} frames`);
+    flash(`saved ${result.frames} frames, ${mb} MB`);
   }, [flash]);
 
   const startRecording = useCallback(async () => {
@@ -146,11 +152,12 @@ export default function App() {
     const s = settingsRef.current;
 
     // WebCodecs cannot keep an alpha channel, verified across avc, hevc, vp9,
-    // vp8 and av1. A transparent stage therefore goes to the PNG mov muxer,
-    // unless webm was asked for specifically, which MediaRecorder can do with
-    // VP9 alpha and which is far smaller for web use.
+    // vp8 and av1, and there is no in-browser ProRes encoder either. A
+    // transparent stage therefore goes to the raw BGRA mov muxer, unless webm
+    // was asked for specifically, which MediaRecorder can do with VP9 alpha
+    // and which is far smaller for web use.
     if (s.background.transparent && s.record.format !== 'webm') {
-      await exportPngMov();
+      await exportRawMov();
       return;
     }
 
@@ -215,7 +222,7 @@ export default function App() {
     }
     download(blob, `globe-${stamp()}.${await actualExtension(blob, mimeType)}`);
     flash(wentHidden ? 'saved, frames may be missing' : 'saved');
-  }, [flash, encodeExport]);
+  }, [flash, encodeExport, exportRawMov]);
 
   const saveStill = useCallback(async () => {
     const canvas = stageCanvasRef.current;
@@ -326,10 +333,19 @@ export default function App() {
   // outside MediaRecorder's webm.
   const capturesAs = useMemo(() => {
     const format = settings.record.format;
-    // Transparent exports go out as a PNG mov, so only mp4 and gif shift.
+    // Transparent exports go out as a raw BGRA mov, so only mp4 and gif shift.
     if (settings.background.transparent) return format === 'mov' || format === 'webm' ? null : 'mov';
     return format === 'gif' ? 'webm' : null;
   }, [settings.record.format, settings.background.transparent]);
+
+  // A raw mov has no compression at all, so the size is knowable up front and
+  // worth showing before someone starts a 2 GB export by accident.
+  const rawMovMb = useMemo(() => {
+    if (!settings.background.transparent || settings.record.format === 'webm') return null;
+    const { width, height } = outputSize(settings);
+    const frames = Math.max(1, Math.round(durationSeconds(settings) * settings.record.fps));
+    return Math.round(estimateMovBytes(width, height, frames) / 1_000_000);
+  }, [settings]);
 
   return (
     <main className={`page${settings.background.transparent ? ' page--checker' : ''}`}>
@@ -370,6 +386,9 @@ export default function App() {
           </span>
           <span>{durationSeconds(settings).toFixed(1)}s</span>
           <span>{settings.record.fps} fps</span>
+          {rawMovMb !== null ? (
+            <span className={rawMovMb > 300 ? 'readout__warn' : undefined}>~{rawMovMb} MB</span>
+          ) : null}
           {alphaLost ? (
             <span className="readout__warn">{settings.record.format} has no alpha</span>
           ) : null}

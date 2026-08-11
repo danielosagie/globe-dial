@@ -75,24 +75,36 @@ the flag.
 ### Transparent mov from the browser
 
 No browser can *encode* alpha. `VideoEncoder.isConfigSupported` reports
-`alpha: 'keep'` unsupported for avc, hevc, vp9, vp8 and av1, and MediaRecorder
-only carries alpha in webm. There is no ProRes encoder in a browser either.
+`alpha: 'keep'` unsupported for avc, hevc, vp9, vp8 and av1, MediaRecorder only
+carries alpha in webm, and there is no ProRes encoder in a browser either.
 
-So a transparent export skips video encoding altogether. Each frame is taken as
-a PNG, which already has an alpha channel and is lossless, and those frames are
-muxed into a QuickTime container with the `png ` codec by `src/lib/mov.ts`. That
-is a real QuickTime format, read with transparency by QuickTime, Final Cut,
-Premiere, After Effects and Resolve.
+A first version of this worked around that by storing each frame as PNG under
+the classic QuickTime `png ` codec. That produced a container real players
+could open — AVFoundation's own asset loader read the track fine — but it could
+not decode a single frame. Modern QuickTime Player is built entirely on
+AVFoundation, and AVFoundation dropped the legacy Component Manager codecs,
+`png ` among them, years ago. ffprobe is a lenient parser and decoded it
+without complaint, which is exactly why that bug shipped: the container was
+valid, the codec was not, and the tool that matters here is QuickTime, not
+ffprobe.
 
-Verified end to end: ffmpeg reports `codec_name=png`, `pix_fmt=rgba`, and every
-frame decodes with corner alpha 0 and centre alpha 255.
+The fix is `src/lib/mov.ts` writing uncompressed `BGRA`, a registered
+CoreVideo pixel format rather than a codec, so there is no decoder to be
+missing. Verified against AVFoundation directly, not just parsed: loading the
+app's real output reports `isPlayable: true`, and asking it to actually decode
+a frame (`AVAssetImageGenerator`, the same call QuickTime Player makes)
+succeeds with the correct alpha values at the correct pixels.
 
-Because frames are stored individually, size scales with resolution and length.
-A 320 px 48 frame clip is about 1 MB. At 1800 px it will be far larger, so drop
-`stage.scale` or shorten the clip if the file matters more than the fidelity.
+The cost is real and worth knowing before you export: this is uncompressed
+video, width &times; height &times; 4 bytes a frame, nothing more. The panel
+shows the exact file size before you record. At 1800px that is 13 MB a frame,
+so keep browser mov exports short and small, or drop `stage.scale`. For
+anything longer, `pnpm render` gives you real ProRes 4444 compression through
+an actual encoder, still AVFoundation-native, at any size.
+
 Pick `webm` instead when the target is a web page: VP9 alpha through
-MediaRecorder is much smaller, and that is the one path that still needs the tab
-in front.
+MediaRecorder is dramatically smaller, and that is the one alpha path that
+still needs the tab in front.
 
 Turn on `stage.transparent`, pick `mov` or `webm`, and render. The panel warns in
 the readout when the stage is transparent but the chosen format cannot store it,
